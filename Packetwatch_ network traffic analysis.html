@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Packetwatch: network traffic analysis</title>
+<style>
+:root{--bg:#eef2f4;--ink:#1b2a33;--muted:#5a6b75;--line:#cfd9de;--card:#fff;--accent:#0f6b6b;--on:#fff;--high:#b3261e;--medium:#a35f00;--low:#2f6aa3;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121b20;--ink:#e6eef1;--muted:#93a5af;--line:#2a3a43;--card:#1a262d;--accent:#59c2c2;--on:#0b1a1a;--high:#ff8a8d;--medium:#ffc266;--low:#8ec1f5}}
+:root[data-theme="dark"]{--bg:#121b20;--ink:#e6eef1;--muted:#93a5af;--line:#2a3a43;--card:#1a262d;--accent:#59c2c2;--on:#0b1a1a;--high:#ff8a8d;--medium:#ffc266;--low:#8ec1f5}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+header{padding:1.4rem clamp(1rem,4vw,2.5rem);border-bottom:1px solid var(--line)}
+h1{font:600 clamp(1.7rem,4vw,2.4rem)/1.1 "Iowan Old Style",Georgia,serif;margin:0}
+header p{margin:.3rem 0 0;color:var(--muted)}
+h2{font:600 1.1rem Georgia,serif;margin:0 0 .8rem}h3{margin:0;font-size:1.02rem}
+main{max-width:62rem;margin:0 auto;padding:1.5rem clamp(1rem,4vw,2rem) 4rem}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:1.2rem;margin-bottom:1rem}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:1.4rem;text-align:center;cursor:pointer}
+.drop.over{border-color:var(--accent)}
+.row{display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;margin-top:1rem}
+.btn{padding:.6rem 1.1rem;font:600 1rem inherit;background:var(--accent);color:var(--on);border:1px solid var(--accent);border-radius:6px;cursor:pointer}
+.btn.ghost{background:transparent;color:var(--accent)}
+.hint{color:var(--muted);font-size:.9rem;margin:.2rem 0}
+#msg{min-height:1.5rem}.error{color:var(--high);font-weight:600}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:1rem;margin-bottom:1rem}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:.9rem 1rem}
+.stat b{display:block;font-size:1.5rem}.stat span{color:var(--muted);font-size:.9rem}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:1rem}
+svg{width:100%;height:auto;display:block}svg rect{fill:var(--accent)}
+.bar-row{display:grid;grid-template-columns:7.5rem 1fr 4.5rem;gap:.6rem;align-items:center;margin:.35rem 0;font-size:.92rem}
+.bl{overflow:hidden;text-overflow:ellipsis}.bv{text-align:right;color:var(--muted)}
+.track{background:var(--bg);height:.7rem;border-radius:4px;overflow:hidden}.fill{background:var(--accent);height:100%}
+.finding{border:1px solid var(--line);border-left-width:5px;border-radius:6px;padding:.8rem 1rem;margin-bottom:.8rem}
+.finding p{margin:.25rem 0}
+.finding.high{border-left-color:var(--high)}.finding.medium{border-left-color:var(--medium)}.finding.low{border-left-color:var(--low)}
+.ftop{display:flex;gap:.6rem;align-items:center}
+.pill{font-size:.78rem;font-weight:700;padding:.1rem .5rem;border-radius:99px;border:1px solid currentColor}
+.high .pill{color:var(--high)}.medium .pill{color:var(--medium)}.low .pill{color:var(--low)}
+.ev{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.85rem;overflow-wrap:anywhere;background:var(--bg);padding:.3rem .5rem;border-radius:4px}
+.advice{font-weight:600}
+</style>
+</head>
+<body>
+<header><h1>Packetwatch</h1><p>Find scans, floods, beacons, tunnels and spoofing in network traffic. Your capture never leaves this page.</p></header>
+<main>
+  <section class="panel">
+    <label class="drop" id="drop" for="file">Drop a <b>.pcap</b> or <b>.pcapng</b> file here, or click to choose one
+      <input id="file" type="file" accept=".pcap,.pcapng,.cap" hidden></label>
+    <div class="row"><button id="demo" class="btn ghost">Analyze sample traffic</button>
+      <span class="hint">A synthetic capture with known attack patterns. Capture your own with Wireshark or <code>tcpdump -w out.pcap</code>.</span></div>
+  </section>
+  <p id="msg" role="status"></p>
+  <div id="out" hidden>
+    <section class="stats" id="stats"></section>
+    <section class="panel"><h2>Packets over time</h2><div id="timeline"></div></section>
+    <div class="two">
+      <section class="panel"><h2>Protocols</h2><div id="protos"></div></section>
+      <section class="panel"><h2>Top senders</h2><div id="talkers"></div></section>
+    </div>
+    <section class="panel"><h2 id="fhead">Findings</h2><div id="findings"></div></section>
+  </div>
+</main>
+<script>
+// ---- core ----
+const SUSPECT={4444:"Metasploit default handler",1337:"common backdoor port",31337:"Back Orifice backdoor",5555:"Android ADB / RAT",6667:"IRC (classic botnet C2)",12345:"NetBus trojan",9001:"Tor relay default"};
+const ip4=(b,o)=>b[o]+"."+b[o+1]+"."+b[o+2]+"."+b[o+3];
+const mac=(b,o)=>[...b.slice(o,o+6)].map(x=>x.toString(16).padStart(2,"0")).join(":");
+
+function decode(b,link,ts){
+  const other={ts,size:b.length,proto:"Other"};let o=0;
+  if(link===1){
+    if(b.length<14)return null;
+    let et=(b[12]<<8)|b[13];o=14;if(et===0x8100){et=(b[16]<<8)|b[17];o=18;}
+    if(et===0x0806&&b.length>=o+28)return{ts,size:b.length,proto:"ARP",arp:{op:(b[o+6]<<8)|b[o+7],hw:mac(b,o+8),ip:ip4(b,o+14)}};
+    if(et!==0x0800)return other;
+  }else if(link!==101)return other;
+  if(b.length<o+20||(b[o]>>4)!==4)return other;
+  const pr=b[o+9],t=o+(b[o]&15)*4,r={ts,size:b.length,src:ip4(b,o+12),dst:ip4(b,o+16),proto:"Other"};
+  if(pr===6&&b.length>=t+20){
+    r.proto="TCP";r.sport=(b[t]<<8)|b[t+1];r.dport=(b[t+2]<<8)|b[t+3];r.flags=b[t+13];
+    const p=t+(b[t+12]>>4)*4;
+    if(b.length>p){const s=String.fromCharCode(...b.subarray(p,Math.min(b.length,p+300)));
+      if(s.includes("Authorization: Basic"))r.basic=true;else if(r.dport===21&&/^PASS /i.test(s))r.ftp=true;else if(r.dport===23)r.telnet=true;}
+  }else if(pr===17&&b.length>=t+8){
+    r.proto="UDP";r.sport=(b[t]<<8)|b[t+1];r.dport=(b[t+2]<<8)|b[t+3];
+    const p=t+8;
+    if(r.dport===53&&b.length>p+12&&(b[p+2]&0x80)===0){
+      let q=p+12;const labels=[];
+      while(q<b.length&&b[q]&&!(b[q]&0xC0)){labels.push(String.fromCharCode(...b.subarray(q+1,Math.min(b.length,q+1+b[q]))));q+=b[q]+1;}
+      if(labels.length)r.dns=labels.join(".").toLowerCase();
+    }
+  }else if(pr===1&&b.length>t){r.proto="ICMP";r.icmp=b[t];}
+  return r;
+}
+
+function parseCapture(buf,MAX=200000){
+  const dv=new DataView(buf),u=new Uint8Array(buf),out=[];
+  if(buf.byteLength<24)throw new Error("File is too small to be a capture.");
+  const m=dv.getUint32(0,false);
+  if(m===0x0A0D0D0A){
+    const le=dv.getUint32(8,true)===0x1A2B3C4D,links=[],res=[];let off=0;
+    while(off+12<=buf.byteLength&&out.length<MAX){
+      const type=dv.getUint32(off,le),len=dv.getUint32(off+4,le);if(len<12)break;
+      if(type===1){
+        links.push(dv.getUint16(off+8,le));let r=1e-6,p=off+16;
+        while(p+4<=off+len-4){const c=dv.getUint16(p,le),l=dv.getUint16(p+2,le);if(c===0)break;
+          if(c===9){const v=u[p+4];r=v&128?Math.pow(2,-(v&127)):Math.pow(10,-v);}p+=4+((l+3)&~3);}
+        res.push(r);
+      }else if(type===6){
+        const id=dv.getUint32(off+8,le),hi=dv.getUint32(off+12,le),lo=dv.getUint32(off+16,le),cap=dv.getUint32(off+20,le);
+        const r=decode(u.subarray(off+28,off+28+cap),links[id],(hi*4294967296+lo)*(res[id]||1e-6));if(r)out.push(r);
+      }
+      off+=len;
+    }
+    return out;
+  }
+  if(![0xa1b2c3d4,0xd4c3b2a1,0xa1b23c4d,0x4d3cb2a1].includes(m))throw new Error("That file isn't a pcap or pcapng capture.");
+  const le=m===0xd4c3b2a1||m===0x4d3cb2a1,nano=m===0xa1b23c4d||m===0x4d3cb2a1,link=dv.getUint32(20,le);let off=24;
+  while(off+16<=buf.byteLength&&out.length<MAX){
+    const s=dv.getUint32(off,le),f=dv.getUint32(off+4,le),cap=dv.getUint32(off+8,le);off+=16;
+    if(off+cap>buf.byteLength)break;
+    const r=decode(u.subarray(off,off+cap),link,s+f/(nano?1e9:1e6));if(r)out.push(r);off+=cap;
+  }
+  return out;
+}
+
+const entropy=s=>{const c={};for(const ch of s)c[ch]=(c[ch]||0)+1;return -Object.values(c).reduce((a,v)=>a+v/s.length*Math.log2(v/s.length),0);};
+const isPriv=ip=>/^(10\.|192\.168\.|127\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip);
+const push=(m,k,v)=>{(m.get(k)||m.set(k,[]).get(k)).push(v);};
+const inc=(m,k,n=1)=>m.set(k,(m.get(k)||0)+n);
+
+function analyze(recs){
+  const proto={},sent=new Map(),syn=new Map(),synack=new Map(),ports=new Map(),hosts=new Map(),flows=new Map(),arp=new Map(),dns=new Map(),out=new Map(),echo=new Map(),sus=new Map(),clear=new Map();
+  let bytes=0;
+  for(const r of recs){
+    bytes+=r.size;proto[r.proto]=(proto[r.proto]||0)+1;
+    if(r.arp){if(r.arp.op===2){(arp.get(r.arp.ip)||arp.set(r.arp.ip,new Set()).get(r.arp.ip)).add(r.arp.hw);}continue;}
+    if(!r.src)continue;
+    inc(sent,r.src,r.size);
+    if(isPriv(r.src)&&!isPriv(r.dst))inc(out,r.src+"|"+r.dst,r.size);
+    if(r.proto==="TCP"){
+      if((r.flags&0x12)===0x02){
+        (ports.get(r.src+"|"+r.dst)||ports.set(r.src+"|"+r.dst,new Set()).get(r.src+"|"+r.dst)).add(r.dport);
+        (hosts.get(r.src+"|"+r.dport)||hosts.set(r.src+"|"+r.dport,new Set()).get(r.src+"|"+r.dport)).add(r.dst);
+        inc(syn,r.dst);push(flows,[r.src,r.dst,r.dport].join("|"),r.ts);
+        if(SUSPECT[r.dport])inc(sus,[r.src,r.dst,r.dport].join("|"));
+      }else if((r.flags&0x12)===0x12)inc(synack,r.src);
+      if(r.basic)clear.set(r.src+"|"+r.dst+"|HTTP Basic auth header","medium");
+      if(r.ftp)clear.set(r.src+"|"+r.dst+"|FTP password","medium");
+      if(r.telnet)clear.set(r.src+"|"+r.dst+"|Telnet session","low");
+    }else if(r.proto==="UDP"&&r.dns){
+      proto.DNS=(proto.DNS||0)+1;
+      const l=r.dns.split(".");
+      if(l.length>=3){const k=r.src+"|"+l.slice(-2).join(".");
+        const d=dns.get(k)||dns.set(k,{names:new Set(),label:0,ent:0,sample:""}).get(k);
+        d.names.add(r.dns);d.label=Math.max(d.label,l[0].length);
+        const e=l[0].length>=20?entropy(l[0]):0;if(e>d.ent){d.ent=e;d.sample=r.dns;}}
+    }else if(r.proto==="ICMP"&&r.icmp===8)inc(echo,r.src);
+  }
+  const F=[],add=(severity,title,detail,evidence,mitre,advice)=>F.push({severity,title,detail,evidence,mitre,advice});
+  for(const [k,s] of ports){if(s.size>=15){const [src,dst]=k.split("|");add("high","Vertical port scan",`${src} probed many ports on ${dst}.`,`${s.size} distinct ports, e.g. ${[...s].sort((a,b)=>a-b).slice(0,8).join(", ")}`,"T1046 Network Service Discovery","Block or rate-limit the source and check whether it is an authorized scanner.");}}
+  for(const [k,s] of hosts){if(s.size>=15){const [src,port]=k.split("|");add("high","Horizontal port scan / sweep",`${src} probed port ${port} across many hosts.`,`${s.size} distinct targets`,"T1046 Network Service Discovery","Investigate the source host; a sweep on one port often precedes exploitation.");}}
+  for(const [dst,c] of syn){const a=synack.get(dst)||0;if(c>=150&&a<0.2*c)add("high","Possible SYN flood",`${dst} received a burst of connection attempts it barely answered.`,`${c} SYNs, ${a} SYN-ACKs`,"T1499.002 Service Exhaustion Flood","Enable SYN cookies and upstream rate limiting; check for spoofed sources.");}
+  for(const [k,ts] of flows){if(ts.length>=8){
+    ts.sort((a,b)=>a-b);const g=ts.slice(1).map((t,i)=>t-ts[i]),mean=g.reduce((a,b)=>a+b,0)/g.length,sd=Math.sqrt(g.reduce((a,b)=>a+(b-mean)**2,0)/g.length);
+    if(mean>=1&&sd/mean<0.15){const [src,dst,port]=k.split("|");add("high","Beaconing",`${src} contacts ${dst}:${port} at near-constant intervals, typical of C2 check-ins.`,`${ts.length} connections, every ~${mean.toFixed(1)}s (jitter ${(sd/mean*100).toFixed(0)}%)`,"T1071 Application Layer Protocol","Isolate the host and inspect the process making these connections.");}}}
+  for(const [ip,s] of arp){if(s.size>1)add("high","ARP spoofing",`${ip} was claimed by more than one MAC address.`,[...s].sort().join(", "),"T1557.002 ARP Cache Poisoning","Enable dynamic ARP inspection and verify which MAC is the real gateway/host.");}
+  for(const [k,d] of dns){if(d.names.size>=30||d.label>=40||d.ent>=3.8){const [src,parent]=k.split("|"),many=d.names.size>=30;
+    add(many?"high":"medium","Possible DNS tunneling or DGA",`${src} sent unusual DNS queries under ${parent}.`,`${d.names.size} unique names, longest label ${d.label} chars, e.g. ${(d.sample||[...d.names][0]).slice(0,60)}`,"T1071.004 DNS","Check the domain's reputation; CDNs can look similar, so confirm before blocking.");}}
+  for(const [k,c] of sus){const [src,dst,port]=k.split("|");add("medium","Connection to commonly abused port",`${src} connected to ${dst}:${port} (${SUSPECT[port]}).`,`${c} connection attempt(s)`,"T1571 Non-Standard Port","Confirm a legitimate service uses this port.");}
+  for(const [k,sev] of [...clear].sort()){const [src,dst,kind]=k.split("|");add(sev,"Cleartext credentials",`${kind} sent from ${src} to ${dst} without encryption.`,"Contents not stored or shown","T1040 Network Sniffing","Move this service to TLS/SSH and rotate exposed credentials.");}
+  for(const [k,b] of out){if(b>=5e6){const [src,dst]=k.split("|");add("medium","Large outbound transfer",`${src} sent a lot of data to external host ${dst}.`,`${(b/1e6).toFixed(1)} MB`,"T1041 Exfiltration Over C2 Channel","Verify the transfer is expected (backup, upload).");}}
+  for(const [src,c] of echo){if(c>=100)add("low","ICMP flood or sweep",`${src} sent many ping requests.`,`${c} echo requests`,"T1595 Active Scanning","Rate-limit ICMP from this source.");}
+  F.sort((a,b)=>"high medium low".indexOf(a.severity)-"high medium low".indexOf(b.severity));
+  const ts=recs.map(r=>r.ts),t0=Math.min(...ts),dur=ts.length?Math.max(...ts)-t0:0,tl=new Array(60).fill(0);
+  for(const t of ts)tl[dur?Math.min(59,Math.floor((t-t0)/dur*60)):0]++;
+  return{packets:recs.length,bytes,duration:+dur.toFixed(2),protocols:Object.entries(proto).sort((a,b)=>b[1]-a[1]),
+    talkers:[...sent].sort((a,b)=>b[1]-a[1]).slice(0,5),timeline:tl,findings:F};
+}
+
+function demoRecords(){
+  let s=7;const rnd=()=>{s|=0;s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};
+  const ri=(a,b)=>a+Math.floor(rnd()*(b-a+1)),T=1.7e9,R=[],tcp=(ts,src,dst,dport,flags)=>R.push({ts,size:60,proto:"TCP",src,dst,sport:ri(1024,65000),dport,flags});
+  for(let i=0;i<60;i++){const c="10.0.0."+ri(10,40),ts=T+rnd()*300;tcp(ts,c,"93.184.216.34",443,2);tcp(ts+.03,"93.184.216.34",c,0,18);}
+  for(let p=1;p<=60;p++)tcp(T+120+p*.05,"10.0.0.66","10.0.0.5",p,2);
+  for(let i=0;i<300;i++)tcp(T+200+i*.01,"198.51.100."+ri(1,254),"10.0.0.5",80,2);
+  for(let i=0;i<12;i++)tcp(T+10+i*30+(rnd()-.5),"10.0.0.23","203.0.113.50",4444,2);
+  for(let i=0;i<40;i++){let l="";for(let j=0;j<32;j++)l+="abcdefghijklmnopqrstuvwxyz234567"[ri(0,31)];
+    R.push({ts:T+20+i*2,size:90,proto:"UDP",src:"10.0.0.23",dst:"10.0.0.2",sport:53000+i,dport:53,dns:l+".tunnel.example.com"});}
+  R.push({ts:T+5,size:42,proto:"ARP",arp:{op:2,hw:"aa:bb:cc:00:00:01",ip:"10.0.0.1"}},{ts:T+150,size:42,proto:"ARP",arp:{op:2,hw:"aa:bb:cc:00:00:66",ip:"10.0.0.1"}});
+  R.push({ts:T+60,size:70,proto:"TCP",src:"10.0.0.31",dst:"10.0.0.9",sport:40500,dport:21,flags:24,ftp:true},{ts:T+70,size:120,proto:"TCP",src:"10.0.0.32",dst:"10.0.0.8",sport:40501,dport:80,flags:24,basic:true});
+  return R.sort((a,b)=>a.ts-b.ts);
+}
+// ---- ui ----
+const $=s=>document.querySelector(s);
+const el=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e;};
+const fmt=b=>b>1e6?(b/1e6).toFixed(1)+" MB":b>1e3?(b/1e3).toFixed(1)+" KB":b+" B";
+function bars(box,rows,label){box.replaceChildren();const max=Math.max(...rows.map(r=>r[1]),1);
+  rows.forEach(([n,v])=>{const row=el("div","bar-row"),tr=el("div","track"),f=el("div","fill");f.style.width=v/max*100+"%";tr.append(f);row.append(el("span","bl",n),tr,el("span","bv",label(v)));box.append(row);});}
+function render(d,note){
+  $("#out").hidden=false;$("#msg").textContent=note||"";$("#msg").className="hint";
+  const st=$("#stats");st.replaceChildren();
+  [["Packets",d.packets.toLocaleString()],["Data",fmt(d.bytes)],["Duration",d.duration+" s"],["Findings",d.findings.length]].forEach(([k,v])=>{const c=el("div","stat");c.append(el("b",null,v),el("span",null,k));st.append(c);});
+  const tl=$("#timeline"),max=Math.max(...d.timeline,1),NS="http://www.w3.org/2000/svg",svg=document.createElementNS(NS,"svg");
+  svg.setAttribute("viewBox","0 0 600 90");svg.setAttribute("role","img");svg.setAttribute("aria-label","Packets per time slice");
+  d.timeline.forEach((v,i)=>{const r=document.createElementNS(NS,"rect"),h=v/max*86;r.setAttribute("x",i*10+1);r.setAttribute("y",88-h);r.setAttribute("width",8);r.setAttribute("height",Math.max(h,v?1:0));svg.append(r);});
+  tl.replaceChildren(svg);
+  bars($("#protos"),d.protocols,v=>v.toLocaleString());bars($("#talkers"),d.talkers,fmt);
+  $("#fhead").textContent=d.findings.length?`Findings (${d.findings.length})`:"Findings";
+  const box=$("#findings");box.replaceChildren();
+  if(!d.findings.length)box.append(el("p","hint","Nothing suspicious matched the detection rules in this capture."));
+  d.findings.forEach(f=>{const c=el("article","finding "+f.severity),top=el("div","ftop");top.append(el("span","pill",f.severity),el("h3",null,f.title));
+    c.append(top,el("p",null,f.detail),el("p","ev",f.evidence),el("p","hint","ATT&CK: "+f.mitre),el("p","advice",f.advice));box.append(c);});
+}
+async function load(file){
+  if(!file)return;$("#msg").className="hint";$("#msg").textContent="Analyzing…";
+  try{
+    if(file.size>60*1024*1024)throw new Error("File is over 60 MB. Trim it first, e.g. with editcap or tcpdump -c.");
+    const recs=parseCapture(await file.arrayBuffer());
+    if(!recs.length)throw new Error("No packets could be read from this file.");
+    render(analyze(recs),`Analyzed ${file.name}`+(recs.length>=200000?" (first 200,000 packets)":""));
+  }catch(e){$("#out").hidden=true;$("#msg").textContent=e.message;$("#msg").className="error";}
+}
+$("#file").addEventListener("change",e=>load(e.target.files[0]));
+$("#demo").addEventListener("click",()=>render(analyze(demoRecords()),"Showing synthetic sample traffic."));
+const drop=$("#drop");
+["dragover","dragenter"].forEach(n=>drop.addEventListener(n,e=>{e.preventDefault();drop.classList.add("over");}));
+["dragleave","drop"].forEach(n=>drop.addEventListener(n,e=>{e.preventDefault();drop.classList.remove("over");}));
+drop.addEventListener("drop",e=>load(e.dataTransfer.files[0]));
+</script>
+</body>
+</html>
